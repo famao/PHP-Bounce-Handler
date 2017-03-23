@@ -40,6 +40,7 @@ class BounceHandler{
     public $head_hash = array();
     public $fbl_hash = array();
     public $body_hash = array(); // not necessary
+    public $return_body_hash_ = array();
     private $bouncelist = array(); // from bounce_responses
     private $autorespondlist = array(); // from bounce_responses
     private $bouncesubj = array(); // from bounce_responses
@@ -107,8 +108,10 @@ class BounceHandler{
         // parse the email into data structures
         $boundary = isset($this->head_hash['Content-type']['boundary']) ? $this->head_hash['Content-type']['boundary'] : '';
         $mime_sections = $this->parse_body_into_mime_sections($body, $boundary);
-        $this->body_hash = split("\r\n", $body);
+        $this->body_hash = explode("\r\n", $body);
         $this->first_body_hash = isset($mime_sections['first_body_part']) ? $this->parse_head($mime_sections['first_body_part']) : array();
+        // $this->return_body_hash = isset($mime_sections['returned_message_body_part']) ? $this->get_head_from_returned_message_body_part($mime_sections) : FALSE;
+        $this->return_body_hash = isset($mime_sections['returned_message_body_part']) ? $this->parse_head($mime_sections['returned_message_body_part']) : FALSE;
 
         $this->looks_like_a_bounce = $this->is_a_bounce();
         $this->looks_like_an_FBL = $this->is_an_ARF();
@@ -226,7 +229,7 @@ class BounceHandler{
             //  Busted Exim MTA
             //  Up to 50 email addresses can be listed on each header.
             //  There can be multiple X-Failed-Recipients: headers. - (not supported)
-            $arrFailed = split(',', $this->head_hash['X-failed-recipients']);
+            $arrFailed = explode(',', $this->head_hash['X-failed-recipients']);
             for($j=0; $j<count($arrFailed); $j++){
                 $this->output[$j]['recipient'] = trim($arrFailed[$j]);
                 $this->output[$j]['status'] = $this->get_status_code_from_text($this->output[$j]['recipient'],0);
@@ -237,6 +240,7 @@ class BounceHandler{
         else if(!empty($boundary) && $this->looks_like_a_bounce){
             // oh god it could be anything, but at least it has mime parts, so let's try anyway
             $arrFailed = $this->find_email_addresses($mime_sections['first_body_part']);
+            // $arrFailed = $this->find_email_addresses($body);
             for($j=0; $j<count($arrFailed); $j++){
                 $this->output[$j]['recipient'] = trim($arrFailed[$j]);
                 $this->output[$j]['status'] = $this->get_status_code_from_text($this->output[$j]['recipient'],0);
@@ -423,7 +427,7 @@ class BounceHandler{
 
     function parse_head($headers){
         if(!is_array($headers)) 
-          $headers = explode("\r\n", $headers);
+        $headers = explode("\r\n", $headers);
         $hash = $this->standard_parser($headers);
         if(isset($hash['Content-type'])) {//preg_match('/Multipart\/Report/i', $hash['Content-type'])){
             $multipart_report = explode (';', $hash['Content-type']);
@@ -455,7 +459,8 @@ class BounceHandler{
                         $line = substr($line, 0, -1);
                     else
                         $line .= "\r\n";
-                    $decoded .= preg_replace("/=([0-9A-F][0-9A-F])/e", 'chr(hexdec("$1"))', $line);
+                    $decoded .= preg_replace_callback("/=([0-9A-F][0-9A-F])/", 
+                                function($m) { chr(hexdec($m[0])); } , $line);
                 }
                 case 'base64': {
                     $decoded .= base64_decode($line);
@@ -469,7 +474,7 @@ class BounceHandler{
     }
 
     function parse_body_into_mime_sections($body, $boundary){
-        if(!$boundary) return array();
+        if(!$boundary) return array('first_body_part' => '', 'machine_parsable_body_part' => '', 'returned_message_body_part' => '');
         if (is_array($body)) 
             $body = implode("\r\n", $body);
         $body = explode($boundary, $body);
@@ -504,14 +509,15 @@ class BounceHandler{
             }
             elseif (isset($line) && isset($entity) && preg_match('/^\s+(.+)\s*/', $line) && $entity) {
                 $line = trim($line);
-                if (strpos($array[2], '=?') !== FALSE)
-                    $line = iconv_mime_decode($array[2], ICONV_MIME_DECODE_CONTINUE_ON_ERROR, "UTF-8");
-                $hash[$entity] .= ' '. $line;
+                if (isset($line) && strpos($line, '=?') !== FALSE) {
+                    $line = iconv_mime_decode($line, ICONV_MIME_DECODE_CONTINUE_ON_ERROR, "UTF-8");
+                }
+                $hash[$entity] .=  $line;
             }
         }
         // special formatting
         $hash['Received']= @explode('|', $hash['Received']);
-        $hash['Subject'] = isset($hash['Subject']) ? : '';
+        $hash['Subject'] = isset($hash['Subject']) ? $hash['Subject'] : '';
         return $hash;
     }
 
@@ -567,10 +573,11 @@ class BounceHandler{
     }
 
     function get_head_from_returned_message_body_part($mime_sections){
-        $temp = explode("\r\n\r\n", $mime_sections[returned_message_body_part]);
+        $temp = explode("\r\n\r\n", $mime_sections['returned_message_body_part']);
         $head = $this->standard_parser($temp[1]);
         $head['From'] = $this->extract_address($head['From']);
         $head['To'] = $this->extract_address($head['To']);
+        $head['Subject'] = $this->standard_parser($head['Subject']);
         return $head;
     }
 
